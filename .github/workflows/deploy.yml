@@ -1,9 +1,8 @@
-# .github/workflows/deploy.yml
 name: Deploy static site to EC2 (Apache)
 
 on:
   push:
-    branches: [ "develop" ]   # develop に push / merge で実行
+    branches: [ "develop" ]
 
 jobs:
   deploy:
@@ -12,40 +11,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 静的サイトならビルド不要。必要ならここにビルドを追加
-      # - run: npm ci && npm run build
-
-      - name: Rsync files to EC2
-        run: |
-          rsync -avz --delete \
-            --exclude='.git' \
-            --exclude='.github' \
-            -e "ssh -o StrictHostKeyChecking=no" \
-            ./ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:${{ secrets.WEB_ROOT }}/
-
+      # 1) 秘密鍵をagentへ
       - name: Add SSH key
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.SSH_KEY }}
 
-      - name: Upload artifact to EC2
+      # 2) 接続スモークテスト（ここで落ちたらユーザー名/鍵/ホストが違う）
+      - name: SSH smoke test
         run: |
-          rsync -avz -e "ssh -o StrictHostKeyChecking=no" app.tar.gz \
-            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/app.tar.gz
+          ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
+            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} 'whoami'
 
-      - name: Deploy on EC2
+      # 3) 一旦 /tmp/site に同期（sudo不要な場所）
+      - name: Rsync to EC2 /tmp/site
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOSSH'
+          rsync -avz --delete \
+            --exclude='.git' \
+            --exclude='.github' \
+            -e "ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=no" \
+            ./ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/site/
+
+      # 4) 公開ディレクトリへ反映（sudoで移動・権限調整・reload）
+        # WEB_ROOT は例: /var/www/html
+      - name: Publish to WEB_ROOT
+        run: |
+          ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
+            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOSSH'
           set -euo pipefail
-          WEB_ROOT="${{ secrets.WEB_ROOT }}"      # 例: /var/www/html
-          TMPDIR="/tmp/deploy.$(date +%s)"
-          mkdir -p "$TMPDIR"
-          tar -xzf /tmp/app.tar.gz -C "$TMPDIR"
+          WEB_ROOT="${{ secrets.WEB_ROOT }}"
+          sudo rsync -av --delete /tmp/site/ "$WEB_ROOT"/
 
-          # Apache配下へ反映（--delete で不要ファイルを削除して同期）
-          rsync -av --delete "$TMPDIR"/ "$WEB_ROOT"/
-
-          # 権限調整（ディストリに合わせて自動判定）
+          # 権限（ディストリで自動判定）
           if id apache >/dev/null 2>&1; then
             sudo chown -R apache:apache "$WEB_ROOT"
           elif id www-data >/dev/null 2>&1; then
@@ -54,11 +51,8 @@ jobs:
           sudo find "$WEB_ROOT" -type d -exec chmod 755 {} \;
           sudo find "$WEB_ROOT" -type f -exec chmod 644 {} \;
 
-          # Apache/PHP-FPM reload（存在する方だけ効く）
-          sudo systemctl reload httpd 2>/dev/null || true
-          sudo systemctl reload apache2 2>/dev/null || true
-          sudo systemctl reload php-fpm 2>/dev/null || true
+          # Apache reload（ある方だけ効く）
+          sudo systemctl reload httpd 2>/dev/null || sudo systemctl reload apache2 2>/dev/null || true
 
-          rm -rf "$TMPDIR" /tmp/app.tar.gz
           echo "✅ Deploy done to $WEB_ROOT"
           EOSSH
