@@ -11,38 +11,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 1) 秘密鍵をagentへ
-      - name: Add SSH key
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.SSH_KEY }}
-
-      # 2) 接続スモークテスト（ここで落ちたらユーザー名/鍵/ホストが違う）
-      - name: SSH smoke test
+      # 秘密鍵をファイルに復元（SSH_KEY は pem の中身そのまま）
+      - name: Write SSH key file
         run: |
-          ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
+          cat > /tmp/deploy_key <<'EOF'
+          ${{ secrets.SSH_KEY }}
+          EOF
+          chmod 600 /tmp/deploy_key
+
+      # まず -vvv で接続テスト（ここで原因が確定します）
+      - name: SSH smoke test (-vvv)
+        run: |
+          ssh -vvv -i /tmp/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
             ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} 'whoami'
 
-      # 3) 一旦 /tmp/site に同期（sudo不要な場所）
+      # /tmp/site に同期
       - name: Rsync to EC2 /tmp/site
         run: |
           rsync -avz --delete \
             --exclude='.git' \
             --exclude='.github' \
-            -e "ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=no" \
+            -e "ssh -i /tmp/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=no" \
             ./ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/site/
 
-      # 4) 公開ディレクトリへ反映（sudoで移動・権限調整・reload）
-        # WEB_ROOT は例: /var/www/html
+      # 公開ディレクトリへ反映
       - name: Publish to WEB_ROOT
         run: |
-          ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
+          ssh -i /tmp/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
             ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOSSH'
           set -euo pipefail
           WEB_ROOT="${{ secrets.WEB_ROOT }}"
           sudo rsync -av --delete /tmp/site/ "$WEB_ROOT"/
 
-          # 権限（ディストリで自動判定）
           if id apache >/dev/null 2>&1; then
             sudo chown -R apache:apache "$WEB_ROOT"
           elif id www-data >/dev/null 2>&1; then
@@ -50,9 +50,6 @@ jobs:
           fi
           sudo find "$WEB_ROOT" -type d -exec chmod 755 {} \;
           sudo find "$WEB_ROOT" -type f -exec chmod 644 {} \;
-
-          # Apache reload（ある方だけ効く）
           sudo systemctl reload httpd 2>/dev/null || sudo systemctl reload apache2 2>/dev/null || true
-
           echo "✅ Deploy done to $WEB_ROOT"
           EOSSH
