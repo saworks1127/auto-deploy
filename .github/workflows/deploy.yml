@@ -35,21 +35,12 @@ jobs:
             ./ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/site/
 
       # 公開ディレクトリへ反映
-      - name: Publish to WEB_ROOT
+      - name: Publish to WEB_ROOT (no sudo)
         run: |
           ssh -i /tmp/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
             ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOSSH'
           set -euo pipefail
           WEB_ROOT="${{ secrets.WEB_ROOT }}"
-          sudo rsync -av --delete /tmp/site/ "$WEB_ROOT"/
-
-          if id apache >/dev/null 2>&1; then
-            sudo chown -R apache:apache "$WEB_ROOT"
-          elif id www-data >/dev/null 2>&1; then
-            sudo chown -R www-data:www-data "$WEB_ROOT"
-          fi
-          sudo find "$WEB_ROOT" -type d -exec chmod 755 {} \;
-          sudo find "$WEB_ROOT" -type f -exec chmod 644 {} \;
-          sudo systemctl reload httpd 2>/dev/null || sudo systemctl reload apache2 2>/dev/null || true
+          rsync -av --delete /tmp/site/ "$WEB_ROOT"/
           echo "✅ Deploy done to $WEB_ROOT"
           EOSSH
