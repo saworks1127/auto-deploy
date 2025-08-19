@@ -14,10 +14,10 @@ jobs:
 
       # 静的サイトならビルド不要。必要ならここにビルドを追加
       # - run: npm ci && npm run build
-
       - name: Create artifact
         run: |
           tar -czf app.tar.gz \
+            --exclude='./app.tar.gz' \
             --exclude='.git' \
             --exclude='.github' \
             .
